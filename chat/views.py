@@ -3,6 +3,8 @@ import json
 import openai
 import datetime
 import tiktoken
+
+from chatgpt_api.api import ChatGptApi
 from .models import Conversation, Message, Setting, Prompt
 from django.conf import settings
 from django.http import StreamingHttpResponse
@@ -86,9 +88,9 @@ def gen_title(request):
 
     model = get_current_model()
 
-    myOpenai = get_openai()
+    my_openai = get_openai()
     try:
-        openai_response = myOpenai.ChatCompletion.create(
+        openai_response = my_openai.ChatCompletion.create(
             model=model['name'],
             messages=messages,
             max_tokens=256,
@@ -114,90 +116,97 @@ def gen_title(request):
 # @authentication_classes([JWTAuthentication])
 @permission_classes([IsAuthenticated])
 def conversation(request):
-    api_key = get_openai_api_key()
-    if api_key is None:
-        return Response(
-            {
-                'error': 'The administrator has not set the API key'
-            },
-            status=status.HTTP_400_BAD_REQUEST
-        )
-    model = get_current_model()
+    api = ChatGptApi(get_openai_api_key())
     message = request.data.get('message')
     conversation_id = request.data.get('conversationId')
     parent_message_id = request.data.get('parentMessageId')
 
-    if conversation_id:
-        # get the conversation
-        conversation_obj = Conversation.objects.get(id=conversation_id)
-    else:
-        # create a new conversation
-        conversation_obj = Conversation(user=request.user)
-        conversation_obj.save()
-    # insert a new message
-    message_obj = Message(
-        conversation_id=conversation_obj.id,
-        parent_message_id=parent_message_id,
-        message=message
-    )
-    message_obj.save()
-
-    try:
-        messages = build_messages(conversation_obj)
-
-        if settings.DEBUG:
-            print(messages)
-    except ValueError as e:
-        return Response(
-            {
-                'error': e
-            },
-            status=status.HTTP_400_BAD_REQUEST
-        )
-    # print(prompt)
-
-    num_tokens = num_tokens_from_messages(messages)
-    max_tokens = min(model['max_tokens'] - num_tokens, model['max_response_tokens'])
-
-    def stream_content():
-        myOpenai = get_openai()
-
-        openai_response = myOpenai.ChatCompletion.create(
-            model=model['name'],
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=0.7,
-            top_p=1,
-            frequency_penalty=0,
-            presence_penalty=0,
-            stream=True,
-        )
-        collected_events = []
-        completion_text = ''
-        # iterate through the stream of events
-        for event in openai_response:
-            collected_events.append(event)  # save the event response
-            # print(event)
-            if event['choices'][0]['finish_reason'] is not None:
-                break
-            # if debug
-            if settings.DEBUG:
-                print(event)
-            if 'content' in event['choices'][0]['delta']:
-                event_text = event['choices'][0]['delta']['content']
-                completion_text += event_text  # append the text
-                yield sse_pack('message', {'content': event_text})
-
-        ai_message_obj = Message(
-            conversation_id=conversation_obj.id,
-            parent_message_id=message_obj.id,
-            message=completion_text,
-            is_bot=True
-        )
-        ai_message_obj.save()
-        yield sse_pack('done', {'messageId': ai_message_obj.id, 'conversationId': conversation_obj.id})
-
-    return StreamingHttpResponse(stream_content(), content_type='text/event-stream')
+    return api.send_message(message=message, conversation_id=conversation_id, parent_message_id=parent_message_id,
+                            user=request.user, stream=False)
+    # api_key = get_openai_api_key()
+    # if api_key is None:
+    #     return Response(
+    #         {
+    #             'error': 'The administrator has not set the API key'
+    #         },
+    #         status=status.HTTP_400_BAD_REQUEST
+    #     )
+    # model = get_current_model()
+    # message = request.data.get('message')
+    # conversation_id = request.data.get('conversationId')
+    # parent_message_id = request.data.get('parentMessageId')
+    #
+    # if conversation_id:
+    #     # get the conversation
+    #     conversation_obj = Conversation.objects.get(id=conversation_id)
+    # else:
+    #     # create a new conversation
+    #     conversation_obj = Conversation(user=request.user)
+    #     conversation_obj.save()
+    # # insert a new message
+    # message_obj = Message(
+    #     conversation_id=conversation_obj.id,
+    #     parent_message_id=parent_message_id,
+    #     message=message
+    # )
+    # message_obj.save()
+    #
+    # try:
+    #     messages = build_messages(conversation_obj)
+    #
+    #     if settings.DEBUG:
+    #         print(messages)
+    # except ValueError as e:
+    #     return Response(
+    #         {
+    #             'error': e
+    #         },
+    #         status=status.HTTP_400_BAD_REQUEST
+    #     )
+    # # print(prompt)
+    #
+    # num_tokens = num_tokens_from_messages(messages)
+    # max_tokens = min(model['max_tokens'] - num_tokens, model['max_response_tokens'])
+    #
+    # def stream_content():
+    #     my_openai = get_openai()
+    #
+    #     openai_response = my_openai.ChatCompletion.create(
+    #         model=model['name'],
+    #         messages=messages,
+    #         max_tokens=max_tokens,
+    #         temperature=0.7,
+    #         top_p=1,
+    #         frequency_penalty=0,
+    #         presence_penalty=0,
+    #         stream=True,
+    #     )
+    #     collected_events = []
+    #     completion_text = ''
+    #     # iterate through the stream of events
+    #     for event in openai_response:
+    #         collected_events.append(event)  # save the event response
+    #         # print(event)
+    #         if event['choices'][0]['finish_reason'] is not None:
+    #             break
+    #         # if debug
+    #         if settings.DEBUG:
+    #             print(event)
+    #         if 'content' in event['choices'][0]['delta']:
+    #             event_text = event['choices'][0]['delta']['content']
+    #             completion_text += event_text  # append the text
+    #             yield sse_pack('message', {'content': event_text})
+    #
+    #     ai_message_obj = Message(
+    #         conversation_id=conversation_obj.id,
+    #         parent_message_id=message_obj.id,
+    #         message=completion_text,
+    #         is_bot=True
+    #     )
+    #     ai_message_obj.save()
+    #     yield sse_pack('done', {'messageId': ai_message_obj.id, 'conversationId': conversation_obj.id})
+    #
+    # return StreamingHttpResponse(stream_content(), content_type='text/event-stream')
 
 
 def build_messages(conversation_obj):
