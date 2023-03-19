@@ -18,6 +18,7 @@ from bs4 import BeautifulSoup
 from svglib.svglib import svg2rlg
 from reportlab.graphics import renderPM
 
+from chat.models import Setting
 # Local
 from . import exceptions as Exceptions
 
@@ -35,39 +36,37 @@ def token_expired() -> bool:
             bool: True if expired, False if not
     """
     try:
-        # Get path using os, it's in ./classes/auth.json
-        path = os.path.dirname(os.path.abspath(__file__))
-        path = os.path.join(path, "auth.json")
-
-        with open(path, 'r') as f:
-            creds = json.load(f)
-            expires_at = float(creds['expires_at'])
-            if time.time() > expires_at + 3600:
-                return True
-            else:
-                return False
+        expires_at = float(Setting.objects.get(name='openai_access_token_expire_at').value)
+        if time.time() > expires_at + 3600:
+            return True
+        else:
+            return False
     except KeyError:
         return True
     except FileNotFoundError:
         return True
 
 
-def get_access_token() -> Tuple[str or None, str or None]:
-    """
-        Get the access token
-        returns:
-            str: The access token
-    """
-    try:
-        # Get path using os, it's in ./Classes/auth.json
-        path = os.path.dirname(os.path.abspath(__file__))
-        path = os.path.join(path, "auth.json")
-
-        with open(path, 'r') as f:
-            creds = json.load(f)
-            return creds['access_token'], creds['expires_at']
-    except FileNotFoundError:
-        return None, None
+def get_access_token() -> Tuple[str or None, str or None, str or None]:
+    return Setting.objects.get(name='openai_access_token').value, \
+        Setting.objects.get(name='openai_access_token_expire_at').value, \
+        Setting.objects.get(name='openai_cookie').value
+    #
+    # """
+    #     Get the access token
+    #     returns:
+    #         str: The access token
+    # """
+    # try:
+    #     # Get path using os, it's in ./Classes/auth.json
+    #     path = os.path.dirname(os.path.abspath(__file__))
+    #     path = os.path.join(path, "auth.json")
+    #
+    #     with open(path, 'r') as f:
+    #         creds = json.load(f)
+    #         return creds['access_token'], creds['expires_at']
+    # except FileNotFoundError:
+    #     return None, None
 
 
 class Auth:

@@ -10,8 +10,11 @@ import time
 # Requests
 import requests
 
+from chat.models import Message
+from chatgpt_ui_server import settings
 # Local
 from . import headers as Headers
+from .utils import sse_pack
 
 # Colorama
 import colorama
@@ -51,29 +54,29 @@ def __pass_mo(access_token: str, text: str):
                  hooks={'response': _called},
                  data=payload)
 
-
-def ask(
+def streaming_ask(
         auth_token: Tuple,
         prompt: str,
         conversation_id: str or None,
-        previous_convo_id: str or None,
+        parent_message_id: str or None,
         proxies: str or dict or None,
         pass_moderation: bool = False,
 ) -> Tuple[str, str or None, str or None]:
-    auth_token, expiry = auth_token
+    auth_token, expiry, cookie = auth_token
 
     headers = {
         'Content-Type': 'application/json',
         'Authorization': f'Bearer {auth_token}',
         'Accept': 'text/event-stream',
-        'Referer': 'https://chat.openai.com/chat',
+        'Referer': 'https://chat.openai.com/chat?model=gpt-4',
         'Origin': 'https://chat.openai.com',
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15',
+        'Cookie': f'{cookie}',
         'X-OpenAI-Assistant-App-Id': ''
     }
 
-    if previous_convo_id is None:
-        previous_convo_id = str(uuid.uuid4())
+    if parent_message_id is None:
+        parent_message_id = str(uuid.uuid4())
 
     if conversation_id is not None and len(conversation_id) == 0:
         # Empty string
@@ -91,17 +94,105 @@ def ask(
         time.sleep(0.5)
 
     data = {
-        "action": "variant",
+        "action": "next",
         "messages": [
             {
                 "id": str(uuid.uuid4()),
                 "role": "user",
+                "author": {"role": "user"},
                 "content": {"content_type": "text", "parts": [str(prompt)]},
             }
         ],
         "conversation_id": conversation_id,
-        "parent_message_id": previous_convo_id,
-        "model": "text-davinci-002-render"
+        "parent_message_id": parent_message_id,
+        "model": "gpt-4"
+    }
+    try:
+        openai_response = session.post(
+            "https://chat.openai.com/backend-api/conversation",
+            headers=headers,
+            data=json.dumps(data)
+        )
+        collected_events = []
+        completion_text = ''
+        # iterate through the stream of events
+        for event in openai_response:
+            collected_events.append(event)  # save the event response
+            # print(event)
+            if event['choices'][0]['finish_reason'] is not None:
+                break
+            # if debug
+            if settings.DEBUG:
+                print(event)
+            if 'content' in event['choices'][0]['delta']:
+                event_text = event['choices'][0]['delta']['content']
+                completion_text += event_text  # append the text
+                yield sse_pack('message', {'content': event_text})
+
+        ai_message_obj = Message(
+            conversation_id=conversation_obj.id,
+            parent_message_id=message_obj.id,
+            message=completion_text,
+            is_bot=True
+        )
+        ai_message_obj.save()
+        yield sse_pack('done', {'messageId': ai_message_obj.id, 'conversationId': conversation_obj.id})
+    except Exception as e:
+        print(">> Error when calling OpenAI API: " + str(e))
+        return "400", None, None
+
+def ask(
+        auth_token: Tuple,
+        prompt: str,
+        conversation_id: str or None,
+        parent_message_id: str or None,
+        proxies: str or dict or None,
+        pass_moderation: bool = False,
+) -> Tuple[str, str or None, str or None]:
+    auth_token, expiry, cookie = auth_token
+
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': f'Bearer {auth_token}',
+        'Accept': 'text/event-stream',
+        'Referer': 'https://chat.openai.com/chat?model=gpt-4',
+        'Origin': 'https://chat.openai.com',
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15',
+        'Cookie': f'{cookie}',
+        'X-OpenAI-Assistant-App-Id': ''
+    }
+
+    if parent_message_id is None:
+        parent_message_id = str(uuid.uuid4())
+
+    if conversation_id is not None and len(conversation_id) == 0:
+        # Empty string
+        conversation_id = None
+
+    if proxies is not None:
+        if isinstance(proxies, str):
+            proxies = {'http': proxies, 'https': proxies}
+
+        # Set the proxies
+        session.proxies.update(proxies)
+
+    if not pass_moderation:
+        threading.Thread(target=__pass_mo, args=(auth_token, prompt)).start()
+        time.sleep(0.5)
+
+    data = {
+        "action": "next",
+        "messages": [
+            {
+                "id": str(uuid.uuid4()),
+                "role": "user",
+                "author": {"role": "user"},
+                "content": {"content_type": "text", "parts": [str(prompt)]},
+            }
+        ],
+        "conversation_id": conversation_id,
+        "parent_message_id": parent_message_id,
+        "model": "gpt-4"
     }
     try:
         response = session.post(

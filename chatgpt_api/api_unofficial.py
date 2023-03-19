@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
+import json
+import re
 # Builtins
 import sys
 import time
 import os
+import uuid
 from queue import Queue
 from typing import Tuple
 
+import requests
+from django.http import StreamingHttpResponse
+
+from chat.models import Message, Conversation
+from chatgpt_ui_server import settings
 # Local
 from .classes import openai as OpenAI
 from .classes import chat as ChatHandler
@@ -18,7 +25,10 @@ from .classes import exceptions as Exceptions
 import colorama
 from colorama import Fore
 
+from .classes.utils import sse_pack
+
 colorama.init(autoreset=True)
+session = requests.Session()
 
 
 class Options:
@@ -43,13 +53,13 @@ class Chat:
                  password: str,
                  options: Options or None = None,
                  conversation_id: str or None = None,
-                 previous_convo_id: str or None = None):
+                 parent_message_id: str or None = None):
         self.email = email
         self.password = password
         self.options = options
 
         self.conversation_id = conversation_id
-        self.previous_convo_id = previous_convo_id
+        self.parent_message_id = parent_message_id
 
         self.__auth_access_token: str or None = None
         self.__auth_access_token_expiry: int or None = None
@@ -130,7 +140,7 @@ class Chat:
                 with open(self.options.id_log, "r") as f:
                     # Check if there's any data in the file
                     if os.path.getsize(self.options.id_log) > 0:
-                        self.previous_convo_id = f.readline().strip()
+                        self.parent_message_id = f.readline().strip()
                         self.conversation_id = f.readline().strip()
                     else:
                         self.conversation_id = None
@@ -147,7 +157,7 @@ class Chat:
                      f" {Fore.GREEN}Attempting to create them...")
             self._create_access_token()
         else:
-            access_token, expiry = OpenAI.get_access_token()
+            access_token, expiry, cookie = OpenAI.get_access_token()
             self.__auth_access_token = access_token
             self.__auth_access_token_expiry = expiry
 
@@ -175,8 +185,9 @@ class Chat:
         return True
 
     def ask(self, prompt: str,
-            previous_convo_id: str or None = None,
             conversation_id: str or None = None,
+            parent_message_id: str or None = None,
+            user = None,
             rep_queue: Queue or None = None
             ) -> Tuple[str or None, str or None, str or None] or None:
 
@@ -206,34 +217,145 @@ class Chat:
         # Get access token
         access_token = OpenAI.get_access_token()
 
+        if conversation_id is not None:
+            # get the conversation
+            conversation_obj = Conversation.objects.get(id=conversation_id)
+        else:
+            # create a new conversation
+            conversation_obj = Conversation(user=user)
+            conversation_obj.save()
+
+        # insert a new message
+        message_obj = Message(
+            conversation_id=conversation_obj.id,
+            parent_message_id=parent_message_id,
+            message=prompt
+        )
+        message_obj.save()
+
         # Set conversation IDs if supplied
-        if previous_convo_id is not None:
-            self.previous_convo_id = previous_convo_id
+        if parent_message_id is not None:
+            self.parent_message_id = parent_message_id
         if conversation_id is not None:
             self.conversation_id = conversation_id
 
-        answer, previous_convo, convo_id = ChatHandler.ask(auth_token=access_token, prompt=prompt,
-                                                           conversation_id=self.conversation_id,
-                                                           previous_convo_id=self.previous_convo_id,
-                                                           proxies=self.options.proxies,
-                                                           pass_moderation=self.options.pass_moderation)
+        def stream_content():
+            auth_token, expiry, cookie = access_token
 
-        if rep_queue is not None:
-            rep_queue.put((prompt, answer))
+            headers = {
+                'Content-Type': 'application/json',
+                'Authorization': f'Bearer {auth_token}',
+                'Accept': 'text/event-stream',
+                'Referer': 'https://chat.openai.com/chat?model=gpt-4',
+                'Origin': 'https://chat.openai.com',
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15',
+                'Cookie': f'{cookie}',
+                'X-OpenAI-Assistant-App-Id': ''
+            }
 
-        if answer == "400" or answer == "401":
-            self.log(f"{Fore.RED}>> Failed to get a response from the API.")
-            return None
+            if self.parent_message_id is None:
+                self.parent_message_id = str(uuid.uuid4())
 
-        self.conversation_id = convo_id
-        self.previous_convo_id = previous_convo
+            if self.conversation_id is not None and len(self.conversation_id) == 0:
+                # Empty string
+                self.conversation_id = None
 
-        if self.options.track:
-            self.__chat_history.append("You: " + prompt)
-            self.__chat_history.append("Chat GPT: " + answer)
-            self.save_data()
+            if self.proxies is not None:
+                session.proxies.update(self.proxies)
 
-        return answer, previous_convo, convo_id
+            data = {
+                "action": "next",
+                "messages": [
+                    {
+                        "id": str(uuid.uuid4()),
+                        "role": "user",
+                        "author": {"role": "user"},
+                        "content": {"content_type": "text", "parts": [str(prompt)]},
+                    }
+                ],
+                # "conversation_id": conversation_id,
+                # "parent_message_id": parent_message_id,
+                "model": "gpt-4"
+            }
+            if conversation_id is not None and len(conversation_id) > 0:
+                data["conversation_id"] = conversation_id
+            if parent_message_id is not None and len(parent_message_id) > 0:
+                data["parent_message_id"] = parent_message_id
+            else:
+                data["parent_message_id"] = ""
+            try:
+                data_json = json.dumps(data)
+                openai_response = session.post(
+                    "https://chat.openai.com/backend-api/conversation",
+                    headers=headers,
+                    data=data_json,
+                    stream=True
+                )
+                collected_events = []
+                completion_text = ''
+                if openai_response.status_code != 200:
+                    raise Exceptions.PyChatGPTException(f"[Status Code] {openai_response.status_code} | "
+                                                        f"[Response Text] {openai_response.text}")
+
+                # iterate through the stream of events
+                for line in openai_response.iter_lines():
+                    # filter out keep-alive new lines
+                    if line:
+                        decoded_line = line.decode('utf-8')
+                        # for event in response:
+                        if decoded_line.startswith("data: {"):
+                            decoded_line = decoded_line[6:]
+                        if decoded_line.endswith("[DONE]"):
+                            break
+
+                        event = json.loads(decoded_line)
+                        collected_events.append(event)  # save the event response
+
+                        # todo web接口返回的结构和api不同
+                        # {
+                        #     "message": {
+                        #         "id": "8a431ea6-b8c6-4858-9021-eac6fb57383a",
+                        #         "author": {
+                        #             "role": "system",
+                        #             "name": null,
+                        #             "metadata": {}
+                        #         },
+                        #         "create_time": 1679262119.453857,
+                        #         "update_time": null,
+                        #         "content": {
+                        #             "content_type": "text",
+                        #             "parts": [""]
+                        #         },
+                        #         "end_turn": true,
+                        #         "weight": 1.0,
+                        #         "metadata": {},
+                        #         "recipient": "all"
+                        #     },
+                        #     "conversation_id": "f05a206e-3aaf-4d95-96ce-7ec98889dcdd",
+                        #     "error": null
+                        # }
+                        # if debug
+                        if settings.DEBUG:
+                            print(event)
+                        if 'content' in event['choices'][0]['delta']:
+                            event_text = event['choices'][0]['delta']['content']
+                            completion_text += event_text  # append the text
+                            yield sse_pack('message', {'content': event_text})
+
+                ai_message_obj = Message(
+                    conversation_id=conversation_obj.id,
+                    parent_message_id=message_obj.id,
+                    message=completion_text,
+                    is_bot=True
+                )
+                ai_message_obj.save()
+                yield sse_pack('done', {'messageId': ai_message_obj.id, 'conversationId': conversation_obj.id})
+
+            except Exception as e:
+                print(">> Error when calling OpenAI API: " + str(e))
+                return "400", None, None
+        return StreamingHttpResponse(stream_content(), content_type='text/event-stream')
+
 
     def save_data(self):
         if self.options.track:
@@ -242,7 +364,7 @@ class Chat:
                     f.write("\n".join(self.__chat_history) + "\n")
 
                 with open(self.options.id_log, "w") as f:
-                    f.write(str(self.previous_convo_id) + "\n")
+                    f.write(str(self.parent_message_id) + "\n")
                     f.write(str(self.conversation_id) + "\n")
 
             except Exception as ex:
@@ -289,7 +411,7 @@ class Chat:
                 spinner.start(Fore.YELLOW + "Chat GPT is typing...")
                 answer, previous_convo, convo_id = ChatHandler.ask(auth_token=access_token, prompt=prompt,
                                                                    conversation_id=self.conversation_id,
-                                                                   previous_convo_id=self.previous_convo_id,
+                                                                   parent_message_id=self.parent_message_id,
                                                                    proxies=self.options.proxies,
                                                                    pass_moderation=self.options.pass_moderation)
 
@@ -301,7 +423,7 @@ class Chat:
                     return None
 
                 self.conversation_id = convo_id
-                self.previous_convo_id = previous_convo
+                self.parent_message_id = previous_convo
                 spinner.stop()
                 print(f"Chat GPT: {answer}")
 

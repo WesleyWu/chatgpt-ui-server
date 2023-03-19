@@ -9,6 +9,7 @@ from rest_framework import status
 
 from chat.models import Message, Conversation, Setting
 from chatgpt_ui_server import settings
+from .classes.utils import sse_pack
 
 
 class ChatGptApi:
@@ -164,7 +165,7 @@ class ChatGptApi:
         if stream:
             return StreamingHttpResponse(stream_content(), content_type='text/event-stream')
         else:
-            return JsonResponse(data=normal_content())
+            return JsonResponse(normal_content())
 
     def get_openai(self):
         openai.api_key = self.api_key
@@ -242,10 +243,3 @@ def build_messages(conversation_obj):
 
     return system_messages + messages
 
-
-def sse_pack(event, data):
-    # Format data as an SSE message
-    packet = "event: %s\n" % event
-    packet += "data: %s\n" % json.dumps(data)
-    packet += "\n"
-    return packet

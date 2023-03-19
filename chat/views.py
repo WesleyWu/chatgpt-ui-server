@@ -4,6 +4,7 @@ import openai
 import datetime
 import tiktoken
 
+from chatgpt_api import Chat, Options
 from chatgpt_api.api import ChatGptApi
 from .models import Conversation, Message, Setting, Prompt
 from django.conf import settings
@@ -66,14 +67,6 @@ class PromptViewSet(viewsets.ModelViewSet):
         return Response(status=204)
 
 
-def sse_pack(event, data):
-    # Format data as an SSE message
-    packet = "event: %s\n" % event
-    packet += "data: %s\n" % json.dumps(data)
-    packet += "\n"
-    return packet
-
-
 @api_view(['POST'])
 # @authentication_classes([JWTAuthentication])
 @permission_classes([IsAuthenticated])
@@ -83,7 +76,8 @@ def gen_title(request):
     message = Message.objects.filter(conversation_id=conversation_id).order_by('created_at').first()
 
     messages = [
-        {"role": "user", "content": 'Generate a short title for the following content, no more than 10 words: \n\n "%s"' % message.message},
+        {"role": "user",
+         "content": 'Generate a short title for the following content, no more than 10 words: \n\n "%s"' % message.message},
     ]
 
     model = get_current_model()
@@ -116,13 +110,35 @@ def gen_title(request):
 # @authentication_classes([JWTAuthentication])
 @permission_classes([IsAuthenticated])
 def conversation(request):
-    api = ChatGptApi(get_openai_api_key())
+    # api = ChatGptApi(get_openai_api_key())
     message = request.data.get('message')
     conversation_id = request.data.get('conversationId')
     parent_message_id = request.data.get('parentMessageId')
 
-    return api.send_message(message=message, conversation_id=conversation_id, parent_message_id=parent_message_id,
-                            user=request.user, stream=False)
+    options = Options()
+
+    # [New] Pass Moderation. https://github.com/rawandahmad698/PyChatGPT/discussions/103
+    # options.pass_moderation = False
+
+    # [New] Enable, Disable logs
+    options.log = True
+
+    # Track conversation
+    options.track = True
+
+    # Use a proxy
+    options.proxies = 'http://localhost:1087'
+
+    # Optionally, you can pass a file path to save the conversation
+    # They're created if they don't exist
+
+    # options.chat_log = "chat_log.txt"
+    # options.id_log = "id_log.txt"
+
+    # Create a Chat object
+    chat = Chat(email="audiofirst2019@gmail.com", password="TryitNow!!", options=options)
+    return chat.ask(prompt=message, conversation_id=conversation_id, parent_message_id=parent_message_id,
+                    user=request.user)
     # api_key = get_openai_api_key()
     # if api_key is None:
     #     return Response(
