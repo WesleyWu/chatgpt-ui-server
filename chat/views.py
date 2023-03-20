@@ -132,7 +132,7 @@ def conversation(request):
         options.track = True
 
         # Use a proxy
-        options.proxies = 'http://localhost:1087'
+        # options.proxies = 'http://localhost:1087'
 
         # Optionally, you can pass a file path to save the conversation
         # They're created if they don't exist
