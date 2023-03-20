@@ -263,7 +263,7 @@ class Chat:
                 # Empty string
                 self.conversation_id = None
 
-            if self.proxies is not None:
+            if hasattr(self, 'proxies') and self.proxies is not None:
                 session.proxies.update(self.proxies)
 
             data = {
