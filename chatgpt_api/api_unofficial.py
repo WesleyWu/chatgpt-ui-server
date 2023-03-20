@@ -187,7 +187,7 @@ class Chat:
     def ask(self, prompt: str,
             conversation_id: str or None = None,
             parent_message_id: str or None = None,
-            user = None,
+            user=None,
             rep_queue: Queue or None = None
             ) -> Tuple[str or None, str or None, str or None] or None:
 
@@ -203,6 +203,17 @@ class Chat:
 
         if rep_queue is not None and not isinstance(rep_queue, Queue):
             raise Exceptions.PyChatGPTException("Cannot enter a non-queue object as the response queue for threads.")
+
+        if conversation_id is None != parent_message_id is None:
+            raise Exceptions.PyChatGPTException('ChatGPTUnofficialProxyAPI.sendMessage: conversation_id and parent_message_id must both be set or both be undefined')
+
+        if conversation_id is not None and not is_valid_uuid_v4(conversation_id) :
+            raise Exceptions.PyChatGPTException(
+                'ChatGPTUnofficialProxyAPI.sendMessage: conversation_id is not a valid v4 UUID')
+
+        if parent_message_id is not None and not is_valid_uuid_v4(parent_message_id) :
+            raise Exceptions.PyChatGPTException(
+                'ChatGPTUnofficialProxyAPI.sendMessage: parent_message_id is not a valid v4 UUID')
 
         # Check if the access token is expired
         if OpenAI.token_expired():
@@ -220,18 +231,10 @@ class Chat:
         if conversation_id is not None:
             # get the conversation
             conversation_obj = Conversation.objects.get(id=conversation_id)
-        else:
-            # create a new conversation
-            conversation_obj = Conversation(user=user)
-            conversation_obj.save()
-
-        # insert a new message
-        message_obj = Message(
-            conversation_id=conversation_obj.id,
-            parent_message_id=parent_message_id,
-            message=prompt
-        )
-        message_obj.save()
+        # else:
+        #     # create a new conversation
+        #     conversation_obj = Conversation(user=user)
+        #     conversation_obj.save()
 
         # Set conversation IDs if supplied
         if parent_message_id is not None:
@@ -297,18 +300,19 @@ class Chat:
                     raise Exceptions.PyChatGPTException(f"[Status Code] {openai_response.status_code} | "
                                                         f"[Response Text] {openai_response.text}")
 
+
+                response_text = openai_response.text
                 # iterate through the stream of events
-                for line in openai_response.iter_lines():
+                for line in response_text.split("\n\n"):
                     # filter out keep-alive new lines
                     if line:
-                        decoded_line = line.decode('utf-8')
                         # for event in response:
-                        if decoded_line.startswith("data: {"):
-                            decoded_line = decoded_line[6:]
-                        if decoded_line.endswith("[DONE]"):
+                        if line.startswith("data: {"):
+                            line = line[6:]
+                        if line.endswith("[DONE]"):
                             break
 
-                        event = json.loads(decoded_line)
+                        event = json.loads(line)
                         collected_events.append(event)  # save the event response
 
                         # todo web接口返回的结构和api不同
@@ -337,19 +341,43 @@ class Chat:
                         # if debug
                         if settings.DEBUG:
                             print(event)
-                        if 'content' in event['choices'][0]['delta']:
-                            event_text = event['choices'][0]['delta']['content']
-                            completion_text += event_text  # append the text
-                            yield sse_pack('message', {'content': event_text})
+                        role = event['message']['author']['role']
+                        if role == "system" or role == "user":
+                            continue
+                        if 'parts' in event['message']['content']:
+                            event_text = event['message']['content']['parts'][0]
+                            delta = event_text[len(completion_text):]
+                            completion_text = event_text  # append the text
+                            yield sse_pack('message', {'content': delta})
 
+                conversation_id_returned = event['conversation_id']
+                message_id_returned = event['message']['id']
+
+                # conversation_id not set, save the new conversation
+                if conversation_id is None:
+                    # create a new conversation
+                    conversation_obj = Conversation(id=conversation_id_returned, user=user)
+                    conversation_obj.save()
+
+                # insert the message user input
+                user_message_obj = Message(
+                    id=uuid.uuid4(),
+                    conversation_id=conversation_id_returned,
+                    parent_message_id=parent_message_id,
+                    message=prompt
+                )
+                user_message_obj.save()
+
+                # insert the message ai returned
                 ai_message_obj = Message(
-                    conversation_id=conversation_obj.id,
-                    parent_message_id=message_obj.id,
+                    id=message_id_returned,
+                    conversation_id=conversation_id_returned,
+                    parent_message_id=user_message_obj.id,
                     message=completion_text,
                     is_bot=True
                 )
                 ai_message_obj.save()
-                yield sse_pack('done', {'messageId': ai_message_obj.id, 'conversationId': conversation_obj.id})
+                yield sse_pack('done', {'messageId': message_id_returned, 'conversationId': conversation_id_returned})
 
             except Exception as e:
                 print(">> Error when calling OpenAI API: " + str(e))
@@ -436,3 +464,11 @@ class Chat:
                 break
             finally:
                 self.save_data()
+
+
+def is_valid_uuid_v4(uid: str) :
+    try:
+        uuid.UUID(uid)
+        return True
+    except ValueError:
+        return False
