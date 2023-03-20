@@ -173,6 +173,7 @@ ACCOUNT_EMAIL_VERIFICATION = False
 ACCOUNT_EMAIL_REQUIRED = False
 
 # Email settings
+DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'webmaster@localhost')
 EMAIL_BACKEND = os.getenv('EMAIL_BACKEND', 'django.core.mail.backends.smtp.EmailBackend')
 EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.mailgun.org')
 EMAIL_PORT = os.getenv('EMAIL_PORT', 587)
