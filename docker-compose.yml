@@ -1,25 +1,31 @@
 version: '3'
 services:
   wsgi-server:
-    build: .
+    image: wesleywu/chatgpt-ui-server:latest
     environment:
       - APP_DOMAIN=localhost:9000
 #      - DEBUG=True
-#      - DB_URL=postgres://postgres:postgrespw@localhost:49153/chatgpt
+#      - DB_URL=mysql://root:12345678@127.0.0.1:3306/chatgpt
+#      - DEFAULT_FROM_EMAIL=
+#      - EMAIL_HOST=smtp-mail.outlook.com
+#      - EMAIL_PORT=587
+#      - EMAIL_HOST_USER=
+#      - EMAIL_HOST_PASSWORD=
+#      - EMAIL_USE_TLS=True
     ports:
       - '8000:8000'
     networks:
         - chatgpt_network
-  web-server:
-    image: wongsaang/chatgpt-ui-web-server:latest
-    environment:
-      - BACKEND_URL=http://wsgi-server:8000
-    ports:
-      - '9000:80'
-    depends_on:
-      - wsgi-server
-    networks:
-      - chatgpt_network
+#  web-server:
+#    image: wesleywu/chatgpt-ui-server:latest
+#    environment:
+#      - BACKEND_URL=http://wsgi-server:8000
+#    ports:
+#      - '9000:80'
+#    depends_on:
+#      - wsgi-server
+#    networks:
+#      - chatgpt_network
 
 networks:
   chatgpt_network:
