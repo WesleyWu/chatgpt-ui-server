@@ -6,6 +6,7 @@ import re
 import sys
 import time
 import os
+import traceback
 import uuid
 from queue import Queue
 from typing import Tuple
@@ -381,6 +382,7 @@ class Chat:
 
             except Exception as e:
                 print(">> Error when calling OpenAI API: " + str(e))
+                traceback.print_exc()
                 return "400", None, None
         return StreamingHttpResponse(stream_content(), content_type='text/event-stream')
 
